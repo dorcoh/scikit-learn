@@ -778,3 +778,16 @@ def test_enet_l1_ratio():
         est.fit(X, y[:, None])
         est_desired.fit(X, y[:, None])
     assert_array_almost_equal(est.coef_, est_desired.coef_, decimal=5)
+
+def test_elastic_net_no_intercept_coef_shape():
+    # {ElasticNet|Lasso}.fit(..) doesn't return coef_ with correct shape
+    # when object initialized with fit_intercept = False
+
+    X = [[-1], [0], [1]]
+    y = [-1, 0, 1]
+
+    for intercept in [True, False]:
+        clf = ElasticNet(fit_intercept=intercept)
+        clf.fit(X, y)
+        coef_ = clf.coef_
+        assert_equal(coef_.shape, (1,))
