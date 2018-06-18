@@ -118,12 +118,13 @@ class BaseMultilayerPerceptron(six.with_metaclass(ABCMeta, BaseEstimator)):
         return activations
 
     def _compute_loss_grad(self, layer, n_samples, activations, deltas,
-                           coef_grads, intercept_grads):
+                           coef_grads, intercept_grads, sample_weight):
         """Compute the gradient of loss with respect to coefs and intercept for
         specified layer.
 
         This function does backpropagation for the specified one layer.
         """
+        import pdb; pdb.set_trace()
         coef_grads[layer] = safe_sparse_dot(activations[layer].T,
                                             deltas[layer])
         coef_grads[layer] += (self.alpha * self.coefs_[layer])
@@ -184,7 +185,7 @@ class BaseMultilayerPerceptron(six.with_metaclass(ABCMeta, BaseEstimator)):
         return loss, grad
 
     def _backprop(self, X, y, activations, deltas, coef_grads,
-                  intercept_grads):
+                  intercept_grads, sample_weight):
         """Compute the MLP loss function and its corresponding derivatives
         with respect to each parameter: weights and bias vectors.
 
@@ -246,7 +247,8 @@ class BaseMultilayerPerceptron(six.with_metaclass(ABCMeta, BaseEstimator)):
 
         # Compute gradient for the last layer
         coef_grads, intercept_grads = self._compute_loss_grad(
-            last, n_samples, activations, deltas, coef_grads, intercept_grads)
+            last, n_samples, activations, deltas, coef_grads, intercept_grads, 
+            sample_weight)
 
         # Iterate over the hidden layers
         for i in range(self.n_layers_ - 2, 0, -1):
@@ -256,7 +258,7 @@ class BaseMultilayerPerceptron(six.with_metaclass(ABCMeta, BaseEstimator)):
 
             coef_grads, intercept_grads = self._compute_loss_grad(
                 i - 1, n_samples, activations, deltas, coef_grads,
-                intercept_grads)
+                intercept_grads, sample_weight)
 
         return loss, coef_grads, intercept_grads
 
@@ -530,13 +532,12 @@ class BaseMultilayerPerceptron(six.with_metaclass(ABCMeta, BaseEstimator)):
         try:
             for it in range(self.max_iter):
                 X, y = shuffle(X, y, random_state=self._random_state)
-                import pdb; pdb.set_trace()
                 accumulated_loss = 0.0
                 for batch_slice in gen_batches(n_samples, batch_size):
                     activations[0] = X[batch_slice]
                     batch_loss, coef_grads, intercept_grads = self._backprop(
                         X[batch_slice], y[batch_slice], activations, deltas,
-                        coef_grads, intercept_grads)
+                        coef_grads, intercept_grads, sample_weight)
                     accumulated_loss += batch_loss * (batch_slice.stop -
                                                       batch_slice.start)
 
