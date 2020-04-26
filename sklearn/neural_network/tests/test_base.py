@@ -10,7 +10,7 @@ def test_binary_log_loss_1_prob_finite():
     y_true = np.array([[0, 0, 1]]).T
     y_prob = np.array([[0.9, 1.0, 1.0]]).T
 
-    loss = binary_log_loss(y_true, y_prob)
+    loss = binary_log_loss(y_true, y_prob, sample_weight=np.ones(y_true.shape[0]))
     assert np.isfinite(loss)
 
 
@@ -22,5 +22,7 @@ def test_binary_log_loss_1_prob_finite():
 ])
 def test_log_loss_1_prob_finite(y_true, y_prob):
     # y_proba is equal to 1 should result in a finite logloss
-    loss = log_loss(y_true, y_prob)
+    loss = log_loss(y_true, y_prob, sample_weight=np.ones(y_true.shape[0]))
     assert np.isfinite(loss)
+
+# TODO: add test for "old" values of loss functions (before addition of sample_weight)
