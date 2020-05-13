@@ -34,7 +34,7 @@ from ..utils.sparsefuncs import count_nonzero
 from ..utils.validation import _deprecate_positional_args
 from ..exceptions import UndefinedMetricWarning
 from ..preprocessing import label_binarize
-from ..preprocessing._label import _encode
+from ..utils._encode import _encode, _unique
 
 from ._base import _average_binary_score, _average_multiclass_ovo_score
 
@@ -460,7 +460,7 @@ def _multiclass_roc_auc_score(y_true, y_score, labels,
 
     if labels is not None:
         labels = column_or_1d(labels)
-        classes = _encode(labels)
+        classes = _unique(labels)
         if len(classes) != len(labels):
             raise ValueError("Parameter 'labels' must be unique")
         if not np.array_equal(classes, labels):
@@ -474,7 +474,7 @@ def _multiclass_roc_auc_score(y_true, y_score, labels,
             raise ValueError(
                 "'y_true' contains labels not in parameter 'labels'")
     else:
-        classes = _encode(y_true)
+        classes = _unique(y_true)
         if len(classes) != y_score.shape[1]:
             raise ValueError(
                 "Number of classes in y_true not equal to the number of "
@@ -485,7 +485,7 @@ def _multiclass_roc_auc_score(y_true, y_score, labels,
             raise ValueError("sample_weight is not supported "
                              "for multiclass one-vs-one ROC AUC, "
                              "'sample_weight' must be None in this case.")
-        _, y_true_encoded = _encode(y_true, uniques=classes, encode=True)
+        y_true_encoded = _encode(y_true, uniques=classes)
         # Hand & Till (2001) implementation (ovo)
         return _average_multiclass_ovo_score(_binary_roc_auc_score,
                                              y_true_encoded,
@@ -848,6 +848,8 @@ def label_ranking_average_precision_score(y_true, y_score, *,
     sample_weight : array-like of shape (n_samples,), default=None
         Sample weights.
 
+        .. versionadded:: 0.20
+
     Returns
     -------
     score : float
@@ -1031,7 +1033,7 @@ def label_ranking_loss(y_true, y_score, *, sample_weight=None):
             unique_inverse[y_true.indices[start:stop]],
             minlength=len(unique_scores))
         all_at_reversed_rank = np.bincount(unique_inverse,
-                                        minlength=len(unique_scores))
+                                           minlength=len(unique_scores))
         false_at_reversed_rank = all_at_reversed_rank - true_at_reversed_rank
 
         # if the scores are ordered, it's possible to count the number of

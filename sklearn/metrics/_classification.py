@@ -227,6 +227,8 @@ def confusion_matrix(y_true, y_pred, *, labels=None, sample_weight=None,
     sample_weight : array-like of shape (n_samples,), default=None
         Sample weights.
 
+        .. versionadded:: 0.18
+
     normalize : {'true', 'pred', 'all'}, default=None
         Normalizes confusion matrix over the true (rows), predicted (columns)
         conditions or all the population. If None, confusion matrix will not be
@@ -788,6 +790,8 @@ def matthews_corrcoef(y_true, y_pred, *, sample_weight=None):
 
     sample_weight : array-like of shape (n_samples,), default=None
         Sample weights.
+
+        .. versionadded:: 0.18
 
     Returns
     -------
@@ -1751,6 +1755,8 @@ def balanced_accuracy_score(y_true, y_pred, *, sample_weight=None,
 
     Read more in the :ref:`User Guide <balanced_accuracy_score>`.
 
+    .. versionadded:: 0.20
+
     Parameters
     ----------
     y_true : 1d array-like
@@ -1848,6 +1854,8 @@ def classification_report(y_true, y_pred, *, labels=None, target_names=None,
 
     output_dict : bool (default = False)
         If True, return output as dict
+
+        .. versionadded:: 0.20
 
     zero_division : "warn", 0 or 1, default="warn"
         Sets the value to return when there is a zero division. If set to
@@ -2152,6 +2160,7 @@ def log_loss(y_true, y_pred, *, eps=1e-15, normalize=True, sample_weight=None,
         If not provided, labels will be inferred from y_true. If ``labels``
         is ``None`` and ``y_pred`` has shape (n_samples,) the labels are
         assumed to be binary and are inferred from ``y_true``.
+
         .. versionadded:: 0.18
 
     Returns

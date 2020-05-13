@@ -914,6 +914,9 @@ class GridSearchCV(BaseSearchCV):
         ``-1`` means using all processors. See :term:`Glossary <n_jobs>`
         for more details.
 
+        .. versionchanged:: v0.20
+           `n_jobs` default changed from 1 to None
+
     pre_dispatch : int, or str, default=n_jobs
         Controls the number of jobs that get dispatched during parallel
         execution. Reducing this number can be useful to avoid an
@@ -1136,6 +1139,8 @@ class GridSearchCV(BaseSearchCV):
 
         This is present only if ``refit`` is not False.
 
+        .. versionadded:: 0.20
+
     Notes
     -----
     The parameters selected are those that maximize the score of the left out
@@ -1250,6 +1255,9 @@ class RandomizedSearchCV(BaseSearchCV):
         ``-1`` means using all processors. See :term:`Glossary <n_jobs>`
         for more details.
 
+        .. versionchanged:: v0.20
+           `n_jobs` default changed from 1 to None
+
     pre_dispatch : int, or str, default=None
         Controls the number of jobs that get dispatched during parallel
         execution. Reducing this number can be useful to avoid an
@@ -1279,6 +1287,7 @@ class RandomizedSearchCV(BaseSearchCV):
     cv : int, cross-validation generator or an iterable, default=None
         Determines the cross-validation splitting strategy.
         Possible inputs for cv are:
+
         - None, to use the default 5-fold cross validation,
         - integer, to specify the number of folds in a `(Stratified)KFold`,
         - :term:`CV splitter`,
@@ -1456,6 +1465,8 @@ class RandomizedSearchCV(BaseSearchCV):
         Seconds used for refitting the best model on the whole dataset.
 
         This is present only if ``refit`` is not False.
+
+        .. versionadded:: 0.20
 
     Notes
     -----
