@@ -19,13 +19,13 @@ from ._base import ACTIVATIONS, DERIVATIVES, LOSS_FUNCTIONS
 from ._stochastic_optimizers import SGDOptimizer, AdamOptimizer
 from ..model_selection import train_test_split
 from ..preprocessing import LabelBinarizer
-from ..utils import gen_batches, check_random_state, compute_sample_weight
+from ..utils import gen_batches, check_random_state
 from ..utils import shuffle
 from ..utils import _safe_indexing
-from ..utils import check_array, column_or_1d
+from ..utils import column_or_1d
 from ..exceptions import ConvergenceWarning
 from ..utils.extmath import safe_sparse_dot
-from ..utils.validation import check_is_fitted, _deprecate_positional_args, _check_sample_weight
+from ..utils.validation import check_is_fitted, _deprecate_positional_args
 from ..utils.multiclass import _check_partial_fit_first_call, unique_labels
 from ..utils.multiclass import type_of_target
 from ..utils.optimize import _check_optimize_result
@@ -54,7 +54,7 @@ class BaseMultilayerPerceptron(BaseEstimator, metaclass=ABCMeta):
                  max_iter, loss, shuffle, random_state, tol, verbose,
                  warm_start, momentum, nesterovs_momentum, early_stopping,
                  validation_fraction, beta_1, beta_2, epsilon,
-                 n_iter_no_change, max_fun, class_weight):
+                 n_iter_no_change, max_fun):
         self.activation = activation
         self.solver = solver
         self.alpha = alpha
@@ -79,7 +79,6 @@ class BaseMultilayerPerceptron(BaseEstimator, metaclass=ABCMeta):
         self.epsilon = epsilon
         self.n_iter_no_change = n_iter_no_change
         self.max_fun = max_fun
-        self.class_weight = class_weight
 
     def _unpack(self, packed_parameters):
         """Extract the coefficients and intercepts from packed_parameters."""
@@ -108,13 +107,46 @@ class BaseMultilayerPerceptron(BaseEstimator, metaclass=ABCMeta):
 
             # For the hidden layers
             if (i + 1) != (self.n_layers_ - 1):
-                activations[i + 1] = hidden_activation(activations[i + 1])
+                hidden_activation(activations[i + 1])
 
         # For the last layer
         output_activation = ACTIVATIONS[self.out_activation_]
-        activations[i + 1] = output_activation(activations[i + 1])
+        output_activation(activations[i + 1])
 
         return activations
+
+    def _forward_pass_fast(self, X):
+        """Predict using the trained model
+
+        This is the same as _forward_pass but does not record the activations
+        of all layers and only returns the last layer's activation.
+
+        Parameters
+        ----------
+        X : {array-like, sparse matrix} of shape (n_samples, n_features)
+            The input data.
+
+        Returns
+        -------
+        y_pred : ndarray of shape (n_samples,) or (n_samples, n_outputs)
+            The decision function of the samples for each class in the model.
+        """
+        X = self._validate_data(X, accept_sparse=['csr', 'csc'], reset=False)
+
+        # Initialize first layer
+        activation = X
+
+        # Forward propagate
+        hidden_activation = ACTIVATIONS[self.activation]
+        for i in range(self.n_layers_ - 1):
+            activation = safe_sparse_dot(activation, self.coefs_[i])
+            activation += self.intercepts_[i]
+            if i != self.n_layers_ - 2:
+                hidden_activation(activation)
+        output_activation = ACTIVATIONS[self.out_activation_]
+        output_activation(activation)
+
+        return activation
 
     def _compute_loss_grad(self, layer, n_samples, activations, deltas,
                            coef_grads, intercept_grads):
@@ -130,10 +162,8 @@ class BaseMultilayerPerceptron(BaseEstimator, metaclass=ABCMeta):
 
         intercept_grads[layer] = np.mean(deltas[layer], 0)
 
-        return coef_grads, intercept_grads
-
     def _loss_grad_lbfgs(self, packed_coef_inter, X, y, activations, deltas,
-                         coef_grads, intercept_grads, sample_weight=None):
+                         coef_grads, intercept_grads):
         """Compute the MLP loss function and its corresponding derivatives
         with respect to the different parameters given in the initialization.
 
@@ -176,13 +206,12 @@ class BaseMultilayerPerceptron(BaseEstimator, metaclass=ABCMeta):
         """
         self._unpack(packed_coef_inter)
         loss, coef_grads, intercept_grads = self._backprop(
-            X, y, activations, deltas, coef_grads, intercept_grads,
-            sample_weight)
+            X, y, activations, deltas, coef_grads, intercept_grads)
         grad = _pack(coef_grads, intercept_grads)
         return loss, grad
 
     def _backprop(self, X, y, activations, deltas, coef_grads,
-                  intercept_grads, sample_weight):
+                  intercept_grads):
         """Compute the MLP loss function and its corresponding derivatives
         with respect to each parameter: weights and bias vectors.
 
@@ -227,12 +256,12 @@ class BaseMultilayerPerceptron(BaseEstimator, metaclass=ABCMeta):
         loss_func_name = self.loss
         if loss_func_name == 'log_loss' and self.out_activation_ == 'logistic':
             loss_func_name = 'binary_log_loss'
-
-        loss = LOSS_FUNCTIONS[loss_func_name](y, activations[-1], sample_weight)
-
+        loss = LOSS_FUNCTIONS[loss_func_name](y, activations[-1])
         # Add L2 regularization term to loss
-        values = np.sum(
-            np.array([np.dot(s.ravel(), s.ravel()) for s in self.coefs_]))
+        values = 0
+        for s in self.coefs_:
+            s = s.ravel()
+            values += np.dot(s, s)
         loss += (0.5 * self.alpha) * values / n_samples
 
         # Backward propagate
@@ -245,22 +274,22 @@ class BaseMultilayerPerceptron(BaseEstimator, metaclass=ABCMeta):
         deltas[last] = activations[-1] - y
 
         # Compute gradient for the last layer
-        coef_grads, intercept_grads = self._compute_loss_grad(
+        self._compute_loss_grad(
             last, n_samples, activations, deltas, coef_grads, intercept_grads)
 
+        inplace_derivative = DERIVATIVES[self.activation]
         # Iterate over the hidden layers
         for i in range(self.n_layers_ - 2, 0, -1):
             deltas[i - 1] = safe_sparse_dot(deltas[i], self.coefs_[i].T)
-            inplace_derivative = DERIVATIVES[self.activation]
             inplace_derivative(activations[i], deltas[i - 1])
 
-            coef_grads, intercept_grads = self._compute_loss_grad(
+            self._compute_loss_grad(
                 i - 1, n_samples, activations, deltas, coef_grads,
                 intercept_grads)
 
         return loss, coef_grads, intercept_grads
 
-    def _initialize(self, y, layer_units):
+    def _initialize(self, y, layer_units, dtype):
         # set all attributes, allocate weights etc for first call
         # Initialize parameters
         self.n_iter_ = 0
@@ -286,7 +315,8 @@ class BaseMultilayerPerceptron(BaseEstimator, metaclass=ABCMeta):
 
         for i in range(self.n_layers_ - 1):
             coef_init, intercept_init = self._init_coef(layer_units[i],
-                                                        layer_units[i + 1])
+                                                        layer_units[i + 1],
+                                                        dtype)
             self.coefs_.append(coef_init)
             self.intercepts_.append(intercept_init)
 
@@ -299,7 +329,7 @@ class BaseMultilayerPerceptron(BaseEstimator, metaclass=ABCMeta):
             else:
                 self.best_loss_ = np.inf
 
-    def _init_coef(self, fan_in, fan_out):
+    def _init_coef(self, fan_in, fan_out, dtype):
         # Use the initialization method recommended by
         # Glorot et al.
         factor = 6.
@@ -312,9 +342,11 @@ class BaseMultilayerPerceptron(BaseEstimator, metaclass=ABCMeta):
                                                (fan_in, fan_out))
         intercept_init = self._random_state.uniform(-init_bound, init_bound,
                                                     fan_out)
+        coef_init = coef_init.astype(dtype, copy=False)
+        intercept_init = intercept_init.astype(dtype, copy=False)
         return coef_init, intercept_init
 
-    def _fit(self, X, y, incremental=False, sample_weight=None):
+    def _fit(self, X, y, incremental=False):
         # Make sure self.hidden_layer_sizes is a list
         hidden_layer_sizes = self.hidden_layer_sizes
         if not hasattr(hidden_layer_sizes, "__iter__"):
@@ -326,19 +358,16 @@ class BaseMultilayerPerceptron(BaseEstimator, metaclass=ABCMeta):
         if np.any(np.array(hidden_layer_sizes) <= 0):
             raise ValueError("hidden_layer_sizes must be > 0, got %s." %
                              hidden_layer_sizes)
+        first_pass = (not hasattr(self, 'coefs_') or
+                      (not self.warm_start and not incremental))
 
-        X, y = self._validate_input(X, y, incremental)
+        X, y = self._validate_input(X, y, incremental, reset=first_pass)
+
         n_samples, n_features = X.shape
 
         # Ensure y is 2D
         if y.ndim == 1:
             y = y.reshape((-1, 1))
-
-        # Handle sample/class weights
-        sample_weight = _check_sample_weight(sample_weight, X, dtype=X.dtype)
-        if isinstance(self, MLPClassifier) and self.class_weight is not None:
-            sample_weight = (sample_weight *
-                             compute_sample_weight(self.class_weight, y))
 
         self.n_outputs_ = y.shape[1]
 
@@ -348,43 +377,32 @@ class BaseMultilayerPerceptron(BaseEstimator, metaclass=ABCMeta):
         # check random state
         self._random_state = check_random_state(self.random_state)
 
-        if not hasattr(self, 'coefs_') or (not self.warm_start and not
-                                           incremental):
+        if first_pass:
             # First time training the model
-            self._initialize(y, layer_units)
-
-        # lbfgs does not support mini-batches
-        if self.solver == 'lbfgs':
-            batch_size = n_samples
-        elif self.batch_size == 'auto':
-            batch_size = min(200, n_samples)
-        else:
-            if self.batch_size < 1 or self.batch_size > n_samples:
-                warnings.warn("Got `batch_size` less than 1 or larger than "
-                              "sample size. It is going to be clipped")
-            batch_size = np.clip(self.batch_size, 1, n_samples)
+            self._initialize(y, layer_units, X.dtype)
 
         # Initialize lists
         activations = [X] + [None] * (len(layer_units) - 1)
         deltas = [None] * (len(activations) - 1)
 
-        coef_grads = [np.empty((n_fan_in_, n_fan_out_)) for n_fan_in_,
+        coef_grads = [np.empty((n_fan_in_, n_fan_out_), dtype=X.dtype)
+                      for n_fan_in_,
                       n_fan_out_ in zip(layer_units[:-1],
                                         layer_units[1:])]
 
-        intercept_grads = [np.empty(n_fan_out_) for n_fan_out_ in
+        intercept_grads = [np.empty(n_fan_out_, dtype=X.dtype)
+                           for n_fan_out_ in
                            layer_units[1:]]
 
         # Run the Stochastic optimization solver
         if self.solver in _STOCHASTIC_SOLVERS:
             self._fit_stochastic(X, y, activations, deltas, coef_grads,
-                                 intercept_grads, layer_units, incremental,
-                                 sample_weight)
+                                 intercept_grads, layer_units, incremental)
 
         # Run the LBFGS solver
         elif self.solver == 'lbfgs':
             self._fit_lbfgs(X, y, activations, deltas, coef_grads,
-                            intercept_grads, layer_units, sample_weight)
+                            intercept_grads, layer_units)
         return self
 
     def _validate_hyperparameters(self):
@@ -440,7 +458,7 @@ class BaseMultilayerPerceptron(BaseEstimator, metaclass=ABCMeta):
                              (self.solver, ", ".join(supported_solvers)))
 
     def _fit_lbfgs(self, X, y, activations, deltas, coef_grads,
-                   intercept_grads, layer_units, sample_weight=None):
+                   intercept_grads, layer_units):
         # Store meta information for the parameters
         self._coef_indptr = []
         self._intercept_indptr = []
@@ -478,15 +496,13 @@ class BaseMultilayerPerceptron(BaseEstimator, metaclass=ABCMeta):
                     "iprint": iprint,
                     "gtol": self.tol
                 },
-                args=(X, y, activations, deltas, coef_grads, intercept_grads,
-                      sample_weight))
+                args=(X, y, activations, deltas, coef_grads, intercept_grads))
         self.n_iter_ = _check_optimize_result("lbfgs", opt_res, self.max_iter)
         self.loss_ = opt_res.fun
         self._unpack(opt_res.x)
 
     def _fit_stochastic(self, X, y, activations, deltas, coef_grads,
-                        intercept_grads, layer_units, incremental,
-                        sample_weight):
+                        intercept_grads, layer_units, incremental):
 
         if not incremental or not hasattr(self, '_optimizer'):
             params = self.coefs_ + self.intercepts_
@@ -506,9 +522,8 @@ class BaseMultilayerPerceptron(BaseEstimator, metaclass=ABCMeta):
             # don't stratify in multilabel classification
             should_stratify = is_classifier(self) and self.n_outputs_ == 1
             stratify = y if should_stratify else None
-            # TODO: handle sample_weight in validation set
-            X, X_val, y, y_val, sample_weight, _ = train_test_split(
-                X, y, sample_weight, random_state=self._random_state,
+            X, X_val, y, y_val = train_test_split(
+                X, y, random_state=self._random_state,
                 test_size=self.validation_fraction,
                 stratify=stratify)
             if is_classifier(self):
@@ -523,6 +538,9 @@ class BaseMultilayerPerceptron(BaseEstimator, metaclass=ABCMeta):
         if self.batch_size == 'auto':
             batch_size = min(200, n_samples)
         else:
+            if self.batch_size < 1 or self.batch_size > n_samples:
+                warnings.warn("Got `batch_size` less than 1 or larger than "
+                              "sample size. It is going to be clipped")
             batch_size = np.clip(self.batch_size, 1, n_samples)
 
         try:
@@ -539,16 +557,14 @@ class BaseMultilayerPerceptron(BaseEstimator, metaclass=ABCMeta):
                     if self.shuffle:
                         X_batch = _safe_indexing(X, sample_idx[batch_slice])
                         y_batch = y[sample_idx[batch_slice]]
-                        sample_weight_batch = sample_weight[sample_idx[batch_slice]]
                     else:
                         X_batch = X[batch_slice]
                         y_batch = y[batch_slice]
-                        sample_weight_batch = sample_weight[batch_slice]
 
                     activations[0] = X_batch
                     batch_loss, coef_grads, intercept_grads = self._backprop(
                         X_batch, y_batch, activations, deltas,
-                        coef_grads, intercept_grads, sample_weight_batch)
+                        coef_grads, intercept_grads)
                     accumulated_loss += batch_loss * (batch_slice.stop -
                                                       batch_slice.start)
 
@@ -638,7 +654,7 @@ class BaseMultilayerPerceptron(BaseEstimator, metaclass=ABCMeta):
             if self.loss_curve_[-1] < self.best_loss_:
                 self.best_loss_ = self.loss_curve_[-1]
 
-    def fit(self, X, y, sample_weight=None):
+    def fit(self, X, y):
         """Fit the model to data matrix X and target(s) y.
 
         Parameters
@@ -654,7 +670,7 @@ class BaseMultilayerPerceptron(BaseEstimator, metaclass=ABCMeta):
         -------
         self : returns a trained MLP model.
         """
-        return self._fit(X, y, incremental=False, sample_weight=sample_weight)
+        return self._fit(X, y, incremental=False)
 
     @property
     def partial_fit(self):
@@ -678,44 +694,8 @@ class BaseMultilayerPerceptron(BaseEstimator, metaclass=ABCMeta):
                                  % self.solver)
         return self._partial_fit
 
-    def _partial_fit(self, X, y, sample_weight=None):
-        return self._fit(X, y, incremental=True, sample_weight=sample_weight)
-
-    def _predict(self, X):
-        """Predict using the trained model
-
-        Parameters
-        ----------
-        X : {array-like, sparse matrix} of shape (n_samples, n_features)
-            The input data.
-
-        Returns
-        -------
-        y_pred : ndarray of shape (n_samples,) or (n_samples, n_outputs)
-            The decision function of the samples for each class in the model.
-        """
-        X = check_array(X, accept_sparse=['csr', 'csc'])
-
-        # Make sure self.hidden_layer_sizes is a list
-        hidden_layer_sizes = self.hidden_layer_sizes
-        if not hasattr(hidden_layer_sizes, "__iter__"):
-            hidden_layer_sizes = [hidden_layer_sizes]
-        hidden_layer_sizes = list(hidden_layer_sizes)
-
-        layer_units = [X.shape[1]] + hidden_layer_sizes + \
-            [self.n_outputs_]
-
-        # Initialize layers
-        activations = [X]
-
-        for i in range(self.n_layers_ - 1):
-            activations.append(np.empty((X.shape[0],
-                                         layer_units[i + 1])))
-        # forward propagate
-        self._forward_pass(activations)
-        y_pred = activations[-1]
-
-        return y_pred
+    def _partial_fit(self, X, y):
+        return self._fit(X, y, incremental=True)
 
 
 class MLPClassifier(ClassifierMixin, BaseMultilayerPerceptron):
@@ -834,7 +814,7 @@ class MLPClassifier(ClassifierMixin, BaseMultilayerPerceptron):
         Momentum for gradient descent update. Should be between 0 and 1. Only
         used when solver='sgd'.
 
-    nesterovs_momentum : boolean, default=True
+    nesterovs_momentum : bool, default=True
         Whether to use Nesterov's momentum. Only used when solver='sgd' and
         momentum > 0.
 
@@ -886,15 +866,24 @@ class MLPClassifier(ClassifierMixin, BaseMultilayerPerceptron):
     loss_ : float
         The current loss computed with the loss function.
 
-    coefs_ : list, length n_layers - 1
+    best_loss_ : float
+        The minimum loss reached by the solver throughout fitting.
+
+    loss_curve_ : list of shape (`n_iter_`,)
+        The ith element in the list represents the loss at the ith iteration.
+
+    t_ : int
+        The number of training samples seen by the solver during fitting.
+
+    coefs_ : list of shape (n_layers - 1,)
         The ith element in the list represents the weight matrix corresponding
         to layer i.
 
-    intercepts_ : list, length n_layers - 1
+    intercepts_ : list of shape (n_layers - 1,)
         The ith element in the list represents the bias vector corresponding to
         layer i + 1.
 
-    n_iter_ : int,
+    n_iter_ : int
         The number of iterations the solver has ran.
 
     n_layers_ : int
@@ -903,9 +892,8 @@ class MLPClassifier(ClassifierMixin, BaseMultilayerPerceptron):
     n_outputs_ : int
         Number of outputs.
 
-    out_activation_ : string
+    out_activation_ : str
         Name of the output activation function.
-
 
     Examples
     --------
@@ -961,8 +949,7 @@ class MLPClassifier(ClassifierMixin, BaseMultilayerPerceptron):
                  verbose=False, warm_start=False, momentum=0.9,
                  nesterovs_momentum=True, early_stopping=False,
                  validation_fraction=0.1, beta_1=0.9, beta_2=0.999,
-                 epsilon=1e-8, n_iter_no_change=10, max_fun=15000,
-                 class_weight=None):
+                 epsilon=1e-8, n_iter_no_change=10, max_fun=15000):
         super().__init__(
             hidden_layer_sizes=hidden_layer_sizes,
             activation=activation, solver=solver, alpha=alpha,
@@ -975,34 +962,59 @@ class MLPClassifier(ClassifierMixin, BaseMultilayerPerceptron):
             early_stopping=early_stopping,
             validation_fraction=validation_fraction,
             beta_1=beta_1, beta_2=beta_2, epsilon=epsilon,
-            n_iter_no_change=n_iter_no_change, max_fun=max_fun,
-            class_weight=class_weight)
+            n_iter_no_change=n_iter_no_change, max_fun=max_fun)
 
-    def _validate_input(self, X, y, incremental):
+    def _validate_input(self, X, y, incremental, reset):
         X, y = self._validate_data(X, y, accept_sparse=['csr', 'csc'],
-                                   multi_output=True)
+                                   multi_output=True,
+                                   dtype=(np.float64, np.float32),
+                                   reset=reset)
         if y.ndim == 2 and y.shape[1] == 1:
             y = column_or_1d(y, warn=True)
 
-        if not incremental:
+        # Matrix of actions to be taken under the possible combinations:
+        # The case that incremental == True and classes_ not defined is
+        # already checked by _check_partial_fit_first_call that is called
+        # in _partial_fit below.
+        # The cases are already grouped into the respective if blocks below.
+        #
+        # incremental warm_start classes_ def  action
+        #    0            0         0        define classes_
+        #    0            1         0        define classes_
+        #    0            0         1        redefine classes_
+        #
+        #    0            1         1        check compat warm_start
+        #    1            1         1        check compat warm_start
+        #
+        #    1            0         1        check compat last fit
+        #
+        # Note the reliance on short-circuiting here, so that the second
+        # or part implies that classes_ is defined.
+        if (
+            (not hasattr(self, "classes_")) or
+            (not self.warm_start and not incremental)
+        ):
             self._label_binarizer = LabelBinarizer()
             self._label_binarizer.fit(y)
             self.classes_ = self._label_binarizer.classes_
-        elif self.warm_start:
-            classes = unique_labels(y)
-            if set(classes) != set(self.classes_):
-                raise ValueError("warm_start can only be used where `y` has "
-                                 "the same classes as in the previous "
-                                 "call to fit. Previously got %s, `y` has %s" %
-                                 (self.classes_, classes))
         else:
             classes = unique_labels(y)
-            if len(np.setdiff1d(classes, self.classes_, assume_unique=True)):
-                raise ValueError("`y` has classes not in `self.classes_`."
-                                 " `self.classes_` has %s. 'y' has %s." %
-                                 (self.classes_, classes))
+            if self.warm_start:
+                if set(classes) != set(self.classes_):
+                    raise ValueError(
+                        f"warm_start can only be used where `y` has the same "
+                        f"classes as in the previous call to fit. Previously "
+                        f"got {self.classes_}, `y` has {classes}"
+                    )
+            elif len(np.setdiff1d(classes, self.classes_, assume_unique=True)):
+                raise ValueError(
+                    f"`y` has classes not in `self.classes_`. "
+                    f"`self.classes_` has {self.classes_}. 'y' has {classes}."
+                )
 
-        y = self._label_binarizer.transform(y)
+        # This downcast to bool is to prevent upcasting when working with
+        # float32 data
+        y = self._label_binarizer.transform(y).astype(bool)
         return X, y
 
     def predict(self, X):
@@ -1019,35 +1031,12 @@ class MLPClassifier(ClassifierMixin, BaseMultilayerPerceptron):
             The predicted classes.
         """
         check_is_fitted(self)
-        y_pred = self._predict(X)
+        y_pred = self._forward_pass_fast(X)
 
         if self.n_outputs_ == 1:
             y_pred = y_pred.ravel()
 
         return self._label_binarizer.inverse_transform(y_pred)
-
-    def fit(self, X, y, sample_weight=None):
-        """Fit the model to data matrix X and target(s) y.
-
-        Parameters
-        ----------
-        X : ndarray or sparse matrix of shape (n_samples, n_features)
-            The input data.
-
-        y : ndarray, shape (n_samples,) or (n_samples, n_outputs)
-            The target values (class labels in classification, real numbers in
-            regression).
-
-        sample_weight : array-like of shape (n_samples,), default=None
-            Sample weights. If None, then samples are equally weighted.
-
-        Returns
-        -------
-        self : returns a trained MLP model.
-        """
-        return self._fit(X, y, incremental=(self.warm_start and
-                                            hasattr(self, "classes_")),
-                         sample_weight=sample_weight)
 
     @property
     def partial_fit(self):
@@ -1055,22 +1044,19 @@ class MLPClassifier(ClassifierMixin, BaseMultilayerPerceptron):
 
         Parameters
         ----------
-        X : {array-like, sparse matrix}, shape (n_samples, n_features)
+        X : {array-like, sparse matrix} of shape (n_samples, n_features)
             The input data.
 
-        y : array-like, shape (n_samples,)
+        y : array-like of shape (n_samples,)
             The target values.
 
-        classes : array, shape (n_classes), default None
+        classes : array of shape (n_classes,), default=None
             Classes across all calls to partial_fit.
             Can be obtained via `np.unique(y_all)`, where y_all is the
             target vector of the entire dataset.
             This argument is required for the first call to partial_fit
             and can be omitted in the subsequent calls.
             Note that y doesn't need to contain all labels in `classes`.
-
-        sample_weight : array-like of shape (n_samples,), default=None
-            Sample weights. If None, then samples are equally weighted.
 
         Returns
         -------
@@ -1082,8 +1068,7 @@ class MLPClassifier(ClassifierMixin, BaseMultilayerPerceptron):
                                  % self.solver)
         return self._partial_fit
 
-    def _partial_fit(self, X, y, classes=None,
-                     sample_weight=None):
+    def _partial_fit(self, X, y, classes=None):
         if _check_partial_fit_first_call(self, classes):
             self._label_binarizer = LabelBinarizer()
             if type_of_target(y).startswith('multilabel'):
@@ -1091,8 +1076,7 @@ class MLPClassifier(ClassifierMixin, BaseMultilayerPerceptron):
             else:
                 self._label_binarizer.fit(classes)
 
-        super()._partial_fit(X, y,
-                             sample_weight=sample_weight)
+        super()._partial_fit(X, y)
 
         return self
 
@@ -1129,7 +1113,7 @@ class MLPClassifier(ClassifierMixin, BaseMultilayerPerceptron):
             model, where classes are ordered as they are in `self.classes_`.
         """
         check_is_fitted(self)
-        y_pred = self._predict(X)
+        y_pred = self._forward_pass_fast(X)
 
         if self.n_outputs_ == 1:
             y_pred = y_pred.ravel()
@@ -1256,7 +1240,7 @@ class MLPRegressor(RegressorMixin, BaseMultilayerPerceptron):
         Momentum for gradient descent update.  Should be between 0 and 1. Only
         used when solver='sgd'.
 
-    nesterovs_momentum : boolean, default=True
+    nesterovs_momentum : bool, default=True
         Whether to use Nesterov's momentum. Only used when solver='sgd' and
         momentum > 0.
 
@@ -1304,15 +1288,24 @@ class MLPRegressor(RegressorMixin, BaseMultilayerPerceptron):
     loss_ : float
         The current loss computed with the loss function.
 
-    coefs_ : list, length n_layers - 1
+    best_loss_ : float
+        The minimum loss reached by the solver throughout fitting.
+
+    loss_curve_ : list of shape (`n_iter_`,)
+        The ith element in the list represents the loss at the ith iteration.
+
+    t_ : int
+        The number of training samples seen by the solver during fitting.
+
+    coefs_ : list of shape (n_layers - 1,)
         The ith element in the list represents the weight matrix corresponding
         to layer i.
 
-    intercepts_ : list, length n_layers - 1
+    intercepts_ : list of shape (n_layers - 1,)
         The ith element in the list represents the bias vector corresponding to
         layer i + 1.
 
-    n_iter_ : int,
+    n_iter_ : int
         The number of iterations the solver has ran.
 
     n_layers_ : int
@@ -1321,8 +1314,15 @@ class MLPRegressor(RegressorMixin, BaseMultilayerPerceptron):
     n_outputs_ : int
         Number of outputs.
 
-    out_activation_ : string
+    out_activation_ : str
         Name of the output activation function.
+
+    loss_curve_ : list of shape (n_iters,)
+        Loss value evaluated at the end of each training step.
+
+    t_ : int
+        Mathematically equals `n_iters * X.shape[0]`, it means
+        `time_step` and it is used by optimizer's learning rate scheduler.
 
     Examples
     --------
@@ -1390,8 +1390,7 @@ class MLPRegressor(RegressorMixin, BaseMultilayerPerceptron):
             early_stopping=early_stopping,
             validation_fraction=validation_fraction,
             beta_1=beta_1, beta_2=beta_2, epsilon=epsilon,
-            n_iter_no_change=n_iter_no_change, max_fun=max_fun,
-            class_weight=None)
+            n_iter_no_change=n_iter_no_change, max_fun=max_fun)
 
     def predict(self, X):
         """Predict using the multi-layer perceptron model.
@@ -1407,14 +1406,16 @@ class MLPRegressor(RegressorMixin, BaseMultilayerPerceptron):
             The predicted values.
         """
         check_is_fitted(self)
-        y_pred = self._predict(X)
+        y_pred = self._forward_pass_fast(X)
         if y_pred.shape[1] == 1:
             return y_pred.ravel()
         return y_pred
 
-    def _validate_input(self, X, y, incremental):
+    def _validate_input(self, X, y, incremental, reset):
         X, y = self._validate_data(X, y, accept_sparse=['csr', 'csc'],
-                                   multi_output=True, y_numeric=True)
+                                   multi_output=True, y_numeric=True,
+                                   dtype=(np.float64, np.float32),
+                                   reset=reset)
         if y.ndim == 2 and y.shape[1] == 1:
             y = column_or_1d(y, warn=True)
         return X, y

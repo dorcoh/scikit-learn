@@ -10,94 +10,69 @@ from scipy.special import expit as logistic_sigmoid
 from scipy.special import xlogy
 
 
-def identity(X):
-    """Simply return the input array.
+def inplace_identity(X):
+    """Simply leave the input array unchanged.
 
     Parameters
     ----------
     X : {array-like, sparse matrix}, shape (n_samples, n_features)
         Data, where n_samples is the number of samples
         and n_features is the number of features.
-
-    Returns
-    -------
-    X : {array-like, sparse matrix}, shape (n_samples, n_features)
-        Same as the input data.
     """
-    return X
+    # Nothing to do
 
 
-def logistic(X):
+def inplace_logistic(X):
     """Compute the logistic function inplace.
 
     Parameters
     ----------
     X : {array-like, sparse matrix}, shape (n_samples, n_features)
         The input data.
-
-    Returns
-    -------
-    X_new : {array-like, sparse matrix}, shape (n_samples, n_features)
-        The transformed data.
     """
-    return logistic_sigmoid(X, out=X)
+    logistic_sigmoid(X, out=X)
 
 
-def tanh(X):
+def inplace_tanh(X):
     """Compute the hyperbolic tan function inplace.
 
     Parameters
     ----------
     X : {array-like, sparse matrix}, shape (n_samples, n_features)
         The input data.
-
-    Returns
-    -------
-    X_new : {array-like, sparse matrix}, shape (n_samples, n_features)
-        The transformed data.
     """
-    return np.tanh(X, out=X)
+    np.tanh(X, out=X)
 
 
-def relu(X):
+def inplace_relu(X):
     """Compute the rectified linear unit function inplace.
 
     Parameters
     ----------
     X : {array-like, sparse matrix}, shape (n_samples, n_features)
         The input data.
-
-    Returns
-    -------
-    X_new : {array-like, sparse matrix}, shape (n_samples, n_features)
-        The transformed data.
     """
-    np.clip(X, 0, np.finfo(X.dtype).max, out=X)
-    return X
+    np.maximum(X, 0, out=X)
 
 
-def softmax(X):
+def inplace_softmax(X):
     """Compute the K-way softmax function inplace.
 
     Parameters
     ----------
     X : {array-like, sparse matrix}, shape (n_samples, n_features)
         The input data.
-
-    Returns
-    -------
-    X_new : {array-like, sparse matrix}, shape (n_samples, n_features)
-        The transformed data.
     """
     tmp = X - X.max(axis=1)[:, np.newaxis]
     np.exp(tmp, out=X)
     X /= X.sum(axis=1)[:, np.newaxis]
 
-    return X
 
-
-ACTIVATIONS = {'identity': identity, 'tanh': tanh, 'logistic': logistic,
-               'relu': relu, 'softmax': softmax}
+ACTIVATIONS = {'identity': inplace_identity,
+               'tanh': inplace_tanh,
+               'logistic': inplace_logistic,
+               'relu': inplace_relu,
+               'softmax': inplace_softmax}
 
 
 def inplace_identity_derivative(Z, delta):
@@ -176,7 +151,7 @@ DERIVATIVES = {'identity': inplace_identity_derivative,
                'relu': inplace_relu_derivative}
 
 
-def squared_loss(y_true, y_pred, sample_weight):
+def squared_loss(y_true, y_pred):
     """Compute the squared loss for regression.
 
     Parameters
@@ -187,19 +162,15 @@ def squared_loss(y_true, y_pred, sample_weight):
     y_pred : array-like or label indicator matrix
         Predicted values, as returned by a regression estimator.
 
-    sample_weight : array-like of shape (n_samples,) sample weights.
-
     Returns
     -------
     loss : float
         The degree to which the samples are correctly predicted.
     """
-    loss = ((y_true - y_pred) ** 2).sum(axis=-1)
-
-    return (loss * sample_weight).mean() / 2
+    return ((y_true - y_pred) ** 2).mean() / 2
 
 
-def log_loss(y_true, y_prob, sample_weight):
+def log_loss(y_true, y_prob):
     """Compute Logistic loss for classification.
 
     Parameters
@@ -210,8 +181,6 @@ def log_loss(y_true, y_prob, sample_weight):
     y_prob : array-like of float, shape = (n_samples, n_classes)
         Predicted probabilities, as returned by a classifier's
         predict_proba method.
-
-    sample_weight : array-like of shape (n_samples,) sample weights.
 
     Returns
     -------
@@ -226,12 +195,10 @@ def log_loss(y_true, y_prob, sample_weight):
     if y_true.shape[1] == 1:
         y_true = np.append(1 - y_true, y_true, axis=1)
 
-    loss = -(xlogy(y_true, y_prob)).sum(axis=-1)
-
-    return (loss * sample_weight).sum() / y_prob.shape[0]
+    return - xlogy(y_true, y_prob).sum() / y_prob.shape[0]
 
 
-def binary_log_loss(y_true, y_prob, sample_weight):
+def binary_log_loss(y_true, y_prob):
     """Compute binary logistic loss for classification.
 
     This is identical to log_loss in binary classification case,
@@ -246,8 +213,6 @@ def binary_log_loss(y_true, y_prob, sample_weight):
         Predicted probabilities, as returned by a classifier's
         predict_proba method.
 
-    sample_weight : array-like of shape (n_samples,) sample weights.
-
     Returns
     -------
     loss : float
@@ -255,10 +220,8 @@ def binary_log_loss(y_true, y_prob, sample_weight):
     """
     eps = np.finfo(y_prob.dtype).eps
     y_prob = np.clip(y_prob, eps, 1 - eps)
-    loss = -(xlogy(y_true, y_prob) +
-             xlogy(1 - y_true, 1 - y_prob)).sum(axis=-1)
-
-    return (loss * sample_weight).sum() / y_prob.shape[0]
+    return -(xlogy(y_true, y_prob).sum() +
+             xlogy(1 - y_true, 1 - y_prob).sum()) / y_prob.shape[0]
 
 
 LOSS_FUNCTIONS = {'squared_loss': squared_loss, 'log_loss': log_loss,
